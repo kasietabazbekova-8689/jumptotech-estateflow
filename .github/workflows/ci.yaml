@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_REGION: us-east-1
 
 jobs:
   build-scan-push:
@@ -25,21 +25,46 @@ jobs:
           - component: frontend
             context: frontend
             dockerfile: frontend/Dockerfile.k8s
-            repository: ${{ vars.ECR_FRONTEND_REPOSITORY }}
+            repository: jumptotech-estateflow-frontend
 
           - component: backend
             context: backend
             dockerfile: backend/Dockerfile
-            repository: ${{ vars.ECR_BACKEND_REPOSITORY }}
+            repository: jumptotech-estateflow-backend
 
     steps:
-      - name: Checkout source code
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Debug GitHub OIDC claims
+        run: |
+          python3 - <<'PY'
+          import os
+          import json
+          import base64
+          import urllib.request
+
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+
+          req = urllib.request.Request(
+              url + "&audience=sts.amazonaws.com",
+              headers={"Authorization": "Bearer " + token}
+          )
+
+          jwt = json.load(urllib.request.urlopen(req))["value"]
+          payload = jwt.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          for key in ["iss", "aud", "sub", "repository", "repository_id", "repository_owner_id", "ref", "event_name"]:
+              print(f"{key}: {claims.get(key)}")
+          PY
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::473479140221:role/GitHubActions-EstateFlow-ECR
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
@@ -58,18 +83,21 @@ jobs:
           docker build \
             --platform linux/amd64 \
             -f ${{ matrix.dockerfile }} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
             ${{ matrix.context }}
 
-      - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ matrix.repository }}:${{ github.sha }}
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'HIGH,CRITICAL'
+      - name: Trivy security scan
+        env:
+          IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ matrix.repository }}:${{ github.sha }}
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "$IMAGE"
 
       - name: Push Docker image to ECR
         env:
@@ -77,7 +105,7 @@ jobs:
           ECR_REPOSITORY: ${{ matrix.repository }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
       - name: Display published image
         run: |

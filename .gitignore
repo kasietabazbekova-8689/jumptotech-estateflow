@@ -1,0 +1,32 @@
+cat > .gitignore <<'EOF'
+node_modules/
+**/node_modules/
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+*.tfplan
+crash.log
+
+*.pem
+*.key
+.DS_Store
+EOF
+
+# Frontend build outputs
+dist/
+**/dist/
+.vite/
+**/.vite/
+*.tsbuildinfo
+
+# Terraform
+.terraform.lock.hcl.backup
+terraform.tfstate.backup
